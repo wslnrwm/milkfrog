@@ -18,21 +18,66 @@
     touch-action: manipulation;
     cursor: pointer;
   }
-  #muteBtn {
-    position: fixed; right: 14px; top: 14px;
+  #menuBtn {
+    position: fixed; top: 14px; right: 14px;
+    width: 38px; height: 38px;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0;
     background: rgba(255,255,255,.85);
-    border: none; border-radius: 20px;
-    padding: 7px 16px; font-size: 14px;
-    font-family: inherit;
+    border: none; border-radius: 50%;
     cursor: pointer; z-index: 10;
     box-shadow: 0 3px 10px rgba(0,0,0,.25);
   }
-  #muteBtn:hover { background: #fff; }
+  #menuBtn:hover { background: #fff; }
+  /* 右上角菜单面板：音量调节 + 返回主菜单 */
+  #menuPanel {
+    position: fixed; top: 56px; right: 14px;
+    min-width: 240px;
+    background: rgba(255,255,255,.96);
+    border-radius: 14px;
+    padding: 14px 18px 16px;
+    z-index: 10;
+    box-shadow: 0 10px 34px rgba(0,0,0,.32);
+    display: none;
+    font-family: inherit;
+    user-select: none;
+  }
+  #menuPanel.show { display: block; }
+  #menuPanel .mp-title {
+    font-weight: bold; font-size: 15px; color: #2d4a2d;
+    margin-bottom: 10px;
+  }
+  #menuPanel .mp-row {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 14px; color: #333;
+  }
+  #volSlider { flex: 1; accent-color: #4dab4d; cursor: pointer; }
+  #volVal { width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
+  #backMenuBtn {
+    margin-top: 12px; width: 100%;
+    padding: 8px 0; font-size: 14px;
+    font-family: inherit; font-weight: bold;
+    color: #fff; background: #e07b54;
+    border: none; border-radius: 10px;
+    cursor: pointer;
+  }
+  #backMenuBtn:hover { background: #c9663f; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
-<button id="muteBtn">音效：开</button>
+<button id="menuBtn" title="菜单" aria-label="菜单">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#333" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+</button>
+<div id="menuPanel">
+  <div class="mp-title">菜单</div>
+  <div class="mp-row">
+    <span>音量</span>
+    <input type="range" id="volSlider" min="0" max="100" value="80">
+    <span id="volVal">80%</span>
+  </div>
+  <button id="backMenuBtn">返回主菜单</button>
+</div>
 <script>
 (() => {
 "use strict";
@@ -42,7 +87,8 @@ const W = 960, H = 540, GROUND = 462;
 const GRAVITY = 2900;
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
-const muteBtn = document.getElementById("muteBtn");
+const menuPanel = document.getElementById("menuPanel");
+const menuBtn = document.getElementById("menuBtn");
 
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -57,9 +103,14 @@ resize();
 addEventListener("resize", resize);
 
 /* ================= 音效（WebAudio 合成，无外部文件） ================= */
-let audioCtx = null, muted = false;
+let audioCtx = null;
+let masterVol = 0.8;   // 主音量 0~1（菜单面板可调，localStorage 记忆）
+try {
+  const v = parseFloat(localStorage.getItem("milkfrog-vol"));
+  if (!isNaN(v)) masterVol = Math.min(1, Math.max(0, v));
+} catch (e) {}
 function beep(freqA, freqB, dur, type, vol) {
-  if (muted) return;
+  if (masterVol <= 0) return;
   try {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") audioCtx.resume();
@@ -69,7 +120,7 @@ function beep(freqA, freqB, dur, type, vol) {
     o.type = type || "square";
     o.frequency.setValueAtTime(freqA, t);
     o.frequency.exponentialRampToValueAtTime(Math.max(freqB, 1), t + dur);
-    g.gain.setValueAtTime(vol || 0.12, t);
+    g.gain.setValueAtTime((vol || 0.12) * masterVol, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + dur);
     o.connect(g).connect(audioCtx.destination);
     o.start(t); o.stop(t + dur);
@@ -88,15 +139,71 @@ const sfx = {
   splash:  () => beep(200, 70, 0.22, "sine", 0.13),
   crack:   () => beep(150, 55, 0.16, "square", 0.14),
 };
-muteBtn.addEventListener("click", (e) => {
+/* ---- 右上角菜单面板：音量调节 + 返回主菜单（游戏中打开自动暂停） ---- */
+let panelPaused = false;
+const volSlider = document.getElementById("volSlider");
+const volVal = document.getElementById("volVal");
+const backMenuBtn = document.getElementById("backMenuBtn");
+function setPanel(open) {
+  menuPanel.classList.toggle("show", open);
+  backMenuBtn.style.display = (state === S_START && !menuSub) ? "none" : "block";
+  if (open && state === S_PLAY && !paused) { paused = true; panelPaused = true; }
+  else if (!open && panelPaused) { paused = false; panelPaused = false; }
+  if (!open && document.activeElement === volSlider) volSlider.blur();
+}
+menuBtn.addEventListener("click", (e) => {
   e.stopPropagation();
-  muted = !muted;
-  muteBtn.textContent = muted ? "音效：关" : "音效：开";
+  setPanel(!menuPanel.classList.contains("show"));
+});
+volSlider.value = Math.round(masterVol * 100);
+volVal.textContent = volSlider.value + "%";
+volSlider.addEventListener("input", () => {
+  masterVol = volSlider.value / 100;
+  volVal.textContent = volSlider.value + "%";
+  localStorage.setItem("milkfrog-vol", masterVol);
+});
+backMenuBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  setPanel(false);
+  backToMenu();
 });
 
 /* ================= 游戏状态 ================= */
 const S_START = 0, S_PLAY = 1, S_OVER = 2;
 let state = S_START;
+
+/* ---- 版本信息（每次更新游戏时：改 GAME_VERSION，并在 VERSION_LOG 顶部加一条） ---- */
+const GAME_VERSION = "v1.1.0";
+const VERSION_LOG = [
+  { ver: "v1.1.0", date: "2026-09-27", items: ["初始版本"] },
+];
+
+/* ---- 主菜单：三个模块按钮 + 子面板（shop / versions） ---- */
+const MENU_BTNS = [
+  { id: "start",    label: "开始游戏" },
+  { id: "shop",     label: "商  店" },
+  { id: "versions", label: "版本更新" },
+];
+const BTN_W = 300, BTN_H = 62, BTN_GAP = 22;
+const BTN_X = W / 2 - BTN_W / 2, BTN_Y0 = 196;
+let menuSub = null;    // null=主菜单, "versions"=版本更新, "shop"=商店
+let hoverId = null;    // 当前悬停按钮
+
+/* ---- 金币钱包 & 商店（金币可攒下消费；商品购买后下一局自动生效） ---- */
+const SHOP_ITEMS = [
+  { id: "shield", name: "开局护盾",   desc: "下一局开始自带 8 秒护盾", price: 30 },
+  { id: "magnet", name: "开局磁铁",   desc: "下一局开始自带 8 秒磁铁", price: 30 },
+  { id: "x2",     name: "双倍金币卡", desc: "下一局金币得分 ×2",      price: 50 },
+  { id: "revive", name: "复活甲",     desc: "撞死后原地复活一次",      price: 80 },
+];
+let bank = +(localStorage.getItem("milkfrog-bank") || 0);
+let bag;
+try { bag = JSON.parse(localStorage.getItem("milkfrog-bag")) || {}; } catch (e) { bag = {}; }
+for (const it of SHOP_ITEMS) if (!(it.id in bag)) bag[it.id] = 0;
+let gold2x = false;        // 本局金币得分双倍（商店卡牌生效中）
+let buyMsg = "", buyMsgT = 0;  // 商店提示
+function saveBank() { localStorage.setItem("milkfrog-bank", bank); }
+function saveBag() { localStorage.setItem("milkfrog-bag", JSON.stringify(bag)); }
 let paused = false;
 let elapsed = 0;          // 总时长（昼夜循环用）
 let dist = 0;             // 奔跑距离
@@ -154,7 +261,11 @@ function makeCloud(x) {
 
 /* ================= 输入 ================= */
 function doJump() {
-  if (state === S_START) { startGame(); return; }
+  if (state === S_START) {
+    if (menuSub) { menuSub = null; return; }  // 子面板打开时空格先返回菜单
+    startGame();
+    return;
+  }
   if (state === S_OVER) { if (overT > 0.6) restart(); return; }
   if (paused) return;
   if (frog.jumps < frog.maxJumps) {
@@ -172,22 +283,127 @@ function startGame() {
   frog.y = GROUND; frog.vy = 0; frog.jumps = 0; frog.deadRot = 0;
   spawnT = 1.5; coinT = 2.2; nextMilestone = 100;
   items = []; combo = 0; comboT = 0; shieldT = 0; magnetT = 0; slowT = 0; itemT = 6;
+  gold2x = false;
   themeIdx = 0; themeFrom = 0; themeK = 1;
   weather = 0; weatherT = rand(25, 40); drops = [];
+  // 商店购买的道具：开局自动生效（一次性消耗）
+  if (bag.shield > 0) { bag.shield--; shieldT = 8; popup(W / 2, 300, "商店护盾已激活！", "#8fd0ff"); }
+  if (bag.magnet > 0) { bag.magnet--; magnetT = 8; popup(W / 2, 336, "商店磁铁已激活！", "#ff9d9d"); }
+  if (bag.x2 > 0)     { bag.x2--;     gold2x = true; popup(W / 2, 372, "双倍金币卡生效！", "#ffd36e"); }
+  saveBag();
   sfx.jump();
 }
 function restart() { startGame(); }
 
+/* 返回主菜单（右上角"菜单"按钮）：中断当前对局 */
+function backToMenu() {
+  if (state === S_START && !menuSub) return;   // 已在主菜单
+  state = S_START;
+  paused = false;
+  menuSub = null; hoverId = null;
+  obstacles = []; coins = []; items = []; parts = []; popups = []; drops = [];
+  speed = 350;
+  frog.y = GROUND; frog.vy = 0; frog.jumps = 0; frog.deadRot = 0;
+  shieldT = 0; magnetT = 0; slowT = 0; combo = 0; comboT = 0; gold2x = false;
+}
+
 addEventListener("keydown", (e) => {
+  if (menuPanel.classList.contains("show")) {
+    // 菜单面板打开时：Esc 关面板，其余按键不作用于游戏
+    if (e.code === "Escape") { e.preventDefault(); setPanel(false); }
+    return;
+  }
   if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") {
     e.preventDefault();
     doJump();
   } else if (e.code === "KeyP" && state === S_PLAY) {
     paused = !paused;
+  } else if (e.code === "Escape" && state === S_START && menuSub) {
+    menuSub = null;  // Esc 关闭子面板
+    sfx.eat();
   }
 });
-canvas.addEventListener("mousedown", (e) => { e.preventDefault(); doJump(); });
-canvas.addEventListener("touchstart", (e) => { e.preventDefault(); doJump(); }, { passive: false });
+
+/* ---- 指针交互：菜单点按钮，游戏里跳跃 ---- */
+function canvasPoint(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (clientX - r.left) / r.width * W, y: (clientY - r.top) / r.height * H };
+}
+function btnRect(id) {
+  const i = MENU_BTNS.findIndex(b => b.id === id);
+  return { x: BTN_X, y: BTN_Y0 + i * (BTN_H + BTN_GAP), w: BTN_W, h: BTN_H };
+}
+function backRect() {  // 子面板"返回"按钮
+  return { x: W / 2 - 80, y: 452, w: 160, h: 52 };
+}
+function shopRowRect(i) {  // 商店第 i 行商品
+  const p = panelRect();
+  return { x: p.x + 22, y: p.y + 76 + i * 74, w: p.w - 44, h: 62 };
+}
+function buyRect(i) {      // 商店购买按钮
+  const r = shopRowRect(i);
+  return { x: r.x + r.w - 104, y: r.y + 13, w: 92, h: 36 };
+}
+function inRect(p, r) { return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h; }
+
+function buyItem(i) {
+  const it = SHOP_ITEMS[i];
+  if (bank < it.price) {
+    buyMsg = "金币不足！先去游戏里攒金币吧"; buyMsgT = 2.2;
+    sfx.hit();
+    return;
+  }
+  bank -= it.price; saveBank();
+  bag[it.id]++; saveBag();
+  buyMsg = "购买成功！「" + it.name + "」下一局自动生效"; buyMsgT = 2.4;
+  sfx.gold();
+}
+
+function menuClick(p) {
+  if (menuSub) {                       // 子面板：返回按钮 / 商店购买 / 面板外空白
+    if (inRect(p, backRect())) { menuSub = null; sfx.eat(); return; }
+    if (menuSub === "shop") {
+      for (let i = 0; i < SHOP_ITEMS.length; i++)
+        if (inRect(p, buyRect(i))) { buyItem(i); return; }
+    }
+    if (!inRect(p, panelRect())) { menuSub = null; sfx.eat(); }
+    return;
+  }
+  for (const b of MENU_BTNS) {
+    if (inRect(p, btnRect(b.id))) {
+      if (b.id === "start") { sfx.jump(); startGame(); }
+      else { menuSub = b.id; sfx.eat(); }
+      return;
+    }
+  }
+}
+
+canvas.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  if (menuPanel.classList.contains("show")) { setPanel(false); return; }  // 点面板外先关面板
+  if (state === S_START) { menuClick(canvasPoint(e.clientX, e.clientY)); return; }
+  doJump();
+});
+canvas.addEventListener("touchstart", (e) => {
+  e.preventDefault();
+  if (menuPanel.classList.contains("show")) { setPanel(false); return; }
+  const t = e.touches[0];
+  if (state === S_START) { menuClick(canvasPoint(t.clientX, t.clientY)); return; }
+  doJump();
+}, { passive: false });
+canvas.addEventListener("mousemove", (e) => {
+  if (state !== S_START) { hoverId = null; return; }
+  const p = canvasPoint(e.clientX, e.clientY);
+  hoverId = null;
+  if (menuSub) {
+    if (inRect(p, backRect())) { hoverId = "back"; return; }
+    if (menuSub === "shop")
+      for (let i = 0; i < SHOP_ITEMS.length; i++)
+        if (inRect(p, buyRect(i))) { hoverId = "buy" + i; break; }
+    return;
+  }
+  for (const b of MENU_BTNS) if (inRect(p, btnRect(b.id))) { hoverId = b.id; break; }
+});
 addEventListener("blur", () => { if (state === S_PLAY) paused = true; });
 
 /* ================= 工具 ================= */
@@ -238,10 +454,14 @@ function spawnObstacle() {
   obstacles.push(o);
 }
 
-/* ---- 道具生成：护盾 / 磁铁 ---- */
+/* ---- 道具生成：护盾 / 磁铁（30% 概率一次出两个） ---- */
 function spawnItem() {
   const kind = Math.random() < 0.5 ? "shield" : "magnet";
-  items.push({ kind, x: W + 60, y: GROUND - rand(85, 190), t: rand(0, 6) });
+  items.push({ kind, x: W + 60, y: GROUND - rand(70, 150), t: rand(0, 6) });
+  if (Math.random() < 0.3) {
+    const k2 = Math.random() < 0.5 ? "shield" : "magnet";
+    items.push({ kind: k2, x: W + 240, y: GROUND - rand(70, 150), t: rand(0, 6) });
+  }
 }
 function spawnCoins() {
   const n = 3 + Math.floor(Math.random() * 3); // 3~5 枚
@@ -342,6 +562,8 @@ function update(dt) {
 
   // 连击倒计时
   if (comboT > 0) { comboT -= dt; if (comboT <= 0) { comboT = 0; combo = 0; } }
+  // 商店提示倒计时
+  if (buyMsgT > 0) buyMsgT -= dt;
   // 增益倒计时
   if (shieldT > 0) shieldT -= dt;
   if (magnetT > 0) magnetT -= dt;
@@ -361,6 +583,8 @@ function update(dt) {
   if (spawnT <= 0) { spawnObstacle(); spawnT = rand(0.95, 1.6) * Math.pow(350 / speed, 0.4); }
   coinT -= dt;
   if (coinT <= 0) { spawnCoins(); coinT = rand(2.6, 4.6); }
+  itemT -= dt;
+  if (itemT <= 0) { spawnItem(); itemT = rand(9, 13); }
 
   // 障碍移动与碰撞
   const fb = frogBox();
@@ -436,9 +660,11 @@ function update(dt) {
       combo = comboT > 0 ? combo + 1 : 1;
       comboT = 2.0;
       const mult = combo >= 5 ? 2 : 1;
-      const gain = (c.gold ? 50 : 10) * mult;
+      const gain = (c.gold ? 50 : 10) * mult * (gold2x ? 2 : 1);
       coinScore += gain;
       coinsGot++;
+      bank += c.gold ? 10 : 1;   // 金币进钱包（商店消费用），大金币折 10 币
+      saveBank();
       c.gold ? sfx.gold() : sfx.eat();
       if (mult > 1) sfx.combo();
       sparkle(c.x, cy);
@@ -450,6 +676,16 @@ function update(dt) {
 }
 
 function die() {
+  // 复活甲：消耗一次，原地复活并给 2.5 秒保护盾
+  if (bag.revive > 0) {
+    bag.revive--; saveBag();
+    shieldT = 2.5;
+    frog.vy = 0; frog.jumps = 0;
+    sparkle(frog.x + 32, frog.y - 44);
+    popup(frog.x + 32, frog.y - 112, "复活甲生效！", "#ffd36e");
+    sfx.shield();
+    return;
+  }
   state = S_OVER;
   overT = 0;
   shakeT = 0.35;
@@ -1074,17 +1310,18 @@ function drawUI() {
   ctx.fillStyle = "rgba(255,255,255,.85)";
   ctx.fillText("最高 " + best, 26, 68);
 
-  // 金币计数
+  // 金币计数 + 钱包余额
   ctx.fillStyle = "#e0a10a";
   ctx.beginPath(); ctx.arc(34, 90, 9, 0, 7); ctx.fill();
   ctx.fillStyle = "#fbc02d";
   ctx.beginPath(); ctx.arc(34, 90, 6.5, 0, 7); ctx.fill();
   ctx.font = "16px 'Microsoft YaHei', sans-serif";
   ctx.fillStyle = "rgba(255,255,255,.9)";
-  ctx.fillText("金币 " + coinsGot, 48, 96);
+  ctx.fillText("金币 " + coinsGot + (gold2x ? "  ×2" : ""), 48, 96);
+  ctx.fillText("钱包 " + bank, 48, 118);
 
   // 连击指示
-  let uy = 124;
+  let uy = 146;
   if (combo >= 2 && comboT > 0 && state === S_PLAY) {
     ctx.font = "bold 21px 'Microsoft YaHei', sans-serif";
     ctx.strokeStyle = "rgba(0,0,0,.4)"; ctx.lineWidth = 4;
@@ -1140,28 +1377,308 @@ function overlay(title, line1, line2) {
   if (line2) ctx.fillText(line2, W / 2, H / 2 + 40);
 }
 
-function drawStart() {
-  overlay("奶蛙快跑", "跳跃：空格 / ↑ / 点击屏幕（可二段跳）    P 暂停", "吃金币攒连击 · 护盾抵挡撞击 · 磁铁吸金币 —— 按任意跳跃键开始");
-  // 标题旁的大奶蛙
+/* ---- 圆角矩形路径 ---- */
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/* 子面板尺寸（版本更新 / 商店共用） */
+function panelRect() {
+  return { x: W / 2 - 280, y: 96, w: 560, h: 400 };
+}
+
+/* ---- 封面小物件：云 / 太阳 ---- */
+function coverCloud(x, y, s) {
+  ctx.fillStyle = "rgba(255,255,255,.92)";
+  ctx.beginPath();
+  ctx.arc(x, y, 26 * s, 0, 7);
+  ctx.arc(x + 30 * s, y - 12 * s, 32 * s, 0, 7);
+  ctx.arc(x + 64 * s, y, 24 * s, 0, 7);
+  ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,.8)";
+  ctx.beginPath();
+  ctx.ellipse(x + 30 * s, y + 12 * s, 52 * s, 14 * s, 0, 0, 7);
+  ctx.fill();
+}
+function coverFrog(img, cx, bottomY, h, flip) {
+  if (!(img.complete && img.naturalWidth > 0)) return;
+  const w = h * img.naturalWidth / img.naturalHeight;
+  ctx.fillStyle = "rgba(0,0,0,.16)";
+  ctx.beginPath();
+  ctx.ellipse(cx, bottomY + 5, w * 0.42, 9, 0, 0, 7);
+  ctx.fill();
   ctx.save();
-  ctx.translate(W / 2, 448);
-  ctx.scale(1.2, 1.2);
-  const saveFrog = { ...frog, x: -32, y: 24, onGround: true };
-  drawFrogAt(saveFrog);
+  if (flip) { ctx.translate(cx, bottomY); ctx.scale(-1, 1); ctx.drawImage(img, -w / 2, -h, w, h); }
+  else ctx.drawImage(img, cx - w / 2, bottomY - h, w, h);
   ctx.restore();
+}
+
+/* ---- 主菜单封面：渐变天空 + 双奶蛙 + 三模块按钮 ---- */
+function drawMenu() {
+  // 天空渐变
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#56b5ec");
+  g.addColorStop(0.55, "#a9def4");
+  g.addColorStop(1, "#e8f7ee");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // 太阳 + 光晕
+  ctx.fillStyle = "rgba(255,240,160,.35)";
+  ctx.beginPath(); ctx.arc(838, 92, 66, 0, 7); ctx.fill();
+  ctx.fillStyle = "#ffec8f";
+  ctx.beginPath(); ctx.arc(838, 92, 40, 0, 7); ctx.fill();
+
+  // 云（复用 clouds 动画数组，菜单里缓缓飘动）
+  for (const c of clouds) coverCloud(c.x, c.y, c.s * 0.9);
+
+  // 远山剪影
+  ctx.fillStyle = "#79b98a";
+  ctx.beginPath();
+  ctx.moveTo(0, 430);
+  ctx.quadraticCurveTo(150, 320, 330, 415);
+  ctx.quadraticCurveTo(480, 480, 640, 400);
+  ctx.quadraticCurveTo(780, 340, 960, 428);
+  ctx.lineTo(960, H); ctx.lineTo(0, H);
+  ctx.closePath(); ctx.fill();
+
+  // 草地（双层）
+  ctx.fillStyle = "#7dc457";
+  ctx.beginPath();
+  ctx.moveTo(0, 468);
+  ctx.quadraticCurveTo(240, 448, 480, 464);
+  ctx.quadraticCurveTo(720, 480, 960, 462);
+  ctx.lineTo(960, H); ctx.lineTo(0, H);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#8a6b4a";
+  ctx.fillRect(0, 500, W, H - 500);
+  ctx.fillStyle = "#7a5c3e";
+  for (let x = 14; x < W; x += 44) ctx.fillRect(x, 514, 20, 7);
+
+  // 双奶蛙：左边站立打招呼，右边奔跑入镜
+  coverFrog(sprites.stand, 226, 470, 236);
+  coverFrog(sprites.run, 768, 462, 182);
+
+  // 标题（阴影 + 描边 + 高光）
+  ctx.textAlign = "center";
+  ctx.font = "bold 84px 'Microsoft YaHei', sans-serif";
+  ctx.fillStyle = "rgba(0,0,0,.28)";
+  ctx.fillText("奶蛙快跑", W / 2 + 4, 152);
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = "rgba(255,255,255,.85)";
+  ctx.strokeText("奶蛙快跑", W / 2, 148);
+  ctx.fillStyle = "#4dab4d";
+  ctx.fillText("奶蛙快跑", W / 2, 148);
+  ctx.font = "bold 19px 'Microsoft YaHei', sans-serif";
+  ctx.fillStyle = "rgba(70,90,70,.85)";
+  ctx.fillText("吃金币 · 攒连击 · 捡道具 —— 一起跑起来！", W / 2, 182);
+
+  // 三个模块按钮（开始 / 商店 / 版本更新）
+  for (const b of MENU_BTNS) {
+    const r = btnRect(b.id);
+    const hov = hoverId === b.id;
+    const main = b.id === "start";
+    rr(r.x, r.y, r.w, r.h, 16);
+    ctx.fillStyle = main
+      ? (hov ? "#5fc45f" : "#4dab4d")
+      : (hov ? "rgba(255,255,255,.45)" : "rgba(255,255,255,.3)");
+    ctx.fill();
+    ctx.strokeStyle = hov ? "rgba(255,255,255,.95)" : "rgba(255,255,255,.7)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 27px 'Microsoft YaHei', sans-serif";
+    ctx.fillText(b.label, r.x + r.w / 2, r.y + r.h / 2 + 9);
+    if (b.id === "versions") {   // 版本更新按钮右侧显示当前版本号
+      ctx.font = "15px 'Microsoft YaHei', sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,.9)";
+      ctx.textAlign = "right";
+      ctx.fillText(GAME_VERSION, r.x + r.w - 14, r.y + 22);
+      ctx.textAlign = "center";
+    }
+  }
+
+  // 底部提示
+  ctx.font = "16px 'Microsoft YaHei', sans-serif";
+  ctx.fillStyle = "rgba(70,90,70,.9)";
+  ctx.fillText("跳跃：空格 / ↑ / 点击屏幕（可二段跳）    P 暂停", W / 2, 528);
+}
+
+/* ---- 子面板外框（标题 + 返回按钮） ---- */
+function panelFrame(title) {
+  const p = panelRect();
+  ctx.fillStyle = "rgba(20,30,25,.62)";
+  ctx.fillRect(0, 0, W, H);
+  rr(p.x, p.y, p.w, p.h, 18);
+  ctx.fillStyle = "rgba(28,42,34,.96)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,.5)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 30px 'Microsoft YaHei', sans-serif";
+  ctx.fillText(title, W / 2, p.y + 48);
+
+  const b = backRect();
+  const hov = hoverId === "back";
+  rr(b.x, b.y, b.w, b.h, 14);
+  ctx.fillStyle = hov ? "rgba(255,255,255,.32)" : "rgba(255,255,255,.2)";
+  ctx.fill();
+  ctx.strokeStyle = hov ? "rgba(255,255,255,.95)" : "rgba(255,255,255,.55)";
+  ctx.stroke();
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 22px 'Microsoft YaHei', sans-serif";
+  ctx.fillText("返 回", W / 2, b.y + b.h / 2 + 8);
+}
+
+/* ---- 版本更新面板 ---- */
+function drawVersionsPanel() {
+  panelFrame("版本更新  " + GAME_VERSION);
+  const p = panelRect();
+  let y = p.y + 84;
+  ctx.textAlign = "left";
+  for (const v of VERSION_LOG) {
+    if (y > p.y + p.h - 58) break;
+    ctx.fillStyle = "#ffe37a";
+    ctx.font = "bold 18px 'Microsoft YaHei', sans-serif";
+    ctx.fillText(v.ver, p.x + 30, y);
+    ctx.fillStyle = "rgba(255,255,255,.6)";
+    ctx.font = "13px 'Microsoft YaHei', sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText(v.date, p.x + p.w - 30, y);
+    ctx.textAlign = "left";
+    y += 21;
+    ctx.fillStyle = "rgba(255,255,255,.92)";
+    ctx.font = "15px 'Microsoft YaHei', sans-serif";
+    for (const it of v.items) {
+      ctx.fillText("· " + it, p.x + 38, y);
+      y += 19;
+    }
+    y += 10;
+  }
+  ctx.textAlign = "center";
+}
+
+/* ---- 商店小图标 ---- */
+function shopIcon(id, x, y) {
+  ctx.save();
+  if (id === "shield") {          // 蓝色泡泡盾
+    ctx.fillStyle = "rgba(140,205,255,.35)";
+    ctx.beginPath(); ctx.arc(x, y, 17, 0, 7); ctx.fill();
+    ctx.strokeStyle = "#8fd0ff"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(x, y, 17, 0, 7); ctx.stroke();
+    ctx.fillStyle = "#e8f6ff";
+    ctx.font = "bold 15px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("盾", x, y + 5);
+  } else if (id === "magnet") {   // 红 U 磁铁
+    ctx.strokeStyle = "#ff6b6b"; ctx.lineWidth = 7; ctx.lineCap = "butt";
+    ctx.beginPath(); ctx.arc(x, y - 2, 10, Math.PI, 0); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x - 10, y - 2); ctx.lineTo(x - 10, y + 9); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x + 10, y - 2); ctx.lineTo(x + 10, y + 9); ctx.stroke();
+    ctx.strokeStyle = "#f2f2f2"; ctx.lineWidth = 7;
+    ctx.beginPath(); ctx.moveTo(x - 10, y + 9); ctx.lineTo(x - 10, y + 12); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x + 10, y + 9); ctx.lineTo(x + 10, y + 12); ctx.stroke();
+  } else if (id === "x2") {       // 金色 ×2
+    ctx.fillStyle = "#ffd34d";
+    ctx.font = "bold 20px 'Microsoft YaHei', sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("×2", x, y + 7);
+  } else {                        // 粉色复活心
+    ctx.fillStyle = "#ff8fa8";
+    ctx.font = "26px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("♥", x, y + 9);
+  }
+  ctx.restore();
+}
+
+/* ---- 商店面板（钱包 + 商品货架） ---- */
+function drawShopPanel() {
+  panelFrame("商  店");
+  const p = panelRect();
+
+  // 钱包余额
+  ctx.fillStyle = "#e0a10a";
+  ctx.beginPath(); ctx.arc(p.x + p.w - 116, p.y + 40, 9, 0, 7); ctx.fill();
+  ctx.fillStyle = "#fbc02d";
+  ctx.beginPath(); ctx.arc(p.x + p.w - 116, p.y + 40, 6, 0, 7); ctx.fill();
+  ctx.textAlign = "left";
+  ctx.font = "bold 18px 'Microsoft YaHei', sans-serif";
+  ctx.fillStyle = "#ffe37a";
+  ctx.fillText("钱包 " + bank, p.x + p.w - 100, p.y + 46);
+
+  // 商品行
+  for (let i = 0; i < SHOP_ITEMS.length; i++) {
+    const it = SHOP_ITEMS[i];
+    const r = shopRowRect(i);
+    const cy = r.y + r.h / 2;
+    rr(r.x, r.y, r.w, r.h, 12);
+    ctx.fillStyle = "rgba(255,255,255,.09)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,.16)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    shopIcon(it.id, r.x + 36, cy);
+
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 17px 'Microsoft YaHei', sans-serif";
+    ctx.fillText(it.name, r.x + 66, cy - 6);
+    ctx.fillStyle = "rgba(255,255,255,.62)";
+    ctx.font = "13px 'Microsoft YaHei', sans-serif";
+    ctx.fillText(it.desc, r.x + 66, cy + 14);
+
+    if (bag[it.id] > 0) {       // 已拥有数量
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#7ee081";
+      ctx.font = "13px 'Microsoft YaHei', sans-serif";
+      ctx.fillText("拥有 x" + bag[it.id], r.x + r.w - 112, cy - 6);
+      ctx.textAlign = "left";
+    }
+
+    // 购买按钮
+    const br = buyRect(i);
+    const hov = hoverId === "buy" + i;
+    const can = bank >= it.price;
+    rr(br.x, br.y, br.w, br.h, 10);
+    ctx.fillStyle = can ? (hov ? "#5fc45f" : "#4dab4d") : "rgba(255,255,255,.14)";
+    ctx.fill();
+    ctx.strokeStyle = can ? "rgba(255,255,255,.6)" : "rgba(255,255,255,.2)";
+    ctx.stroke();
+    // 价格（小金币 + 数字）
+    ctx.fillStyle = "#ffd34d";
+    ctx.beginPath(); ctx.arc(br.x + 20, br.y + br.h / 2, 7, 0, 7); ctx.fill();
+    ctx.fillStyle = "#e0a10a";
+    ctx.beginPath(); ctx.arc(br.x + 20, br.y + br.h / 2, 4.5, 0, 7); ctx.fill();
+    ctx.fillStyle = can ? "#fff" : "rgba(255,255,255,.5)";
+    ctx.font = "bold 16px 'Microsoft YaHei', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(it.price, br.x + br.w / 2 + 10, br.y + br.h / 2 + 6);
+    ctx.textAlign = "left";
+  }
+
+  // 购买提示条
+  if (buyMsgT > 0 && buyMsg) {
+    ctx.textAlign = "center";
+    ctx.globalAlpha = Math.min(1, buyMsgT / 0.4);
+    ctx.fillStyle = buyMsg.startsWith("购买成功") ? "#7ee081" : "#ff9d9d";
+    ctx.font = "bold 15px 'Microsoft YaHei', sans-serif";
+    ctx.fillText(buyMsg, W / 2, p.y + p.h - 16);
+    ctx.globalAlpha = 1;
+    ctx.textAlign = "left";
+  }
+  ctx.textAlign = "center";
 }
 
 function drawOver() {
   overlay("游戏结束", "本局分数 " + score() + "    最高分 " + best,
     score() >= best && score() > 0 ? "新纪录！" : "按空格或点击重新开始");
-}
-
-// 在指定位置绘制奶蛙（开始界面用），复用主体绘制逻辑
-function drawFrogAt(f) {
-  const old = { x: frog.x, y: frog.y, onGround: frog.onGround, runT: frog.runT, blink: frog.blink, deadRot: frog.deadRot };
-  Object.assign(frog, f);
-  drawFrog();
-  Object.assign(frog, old);
 }
 
 /* ================= 主循环 ================= */
@@ -1191,7 +1708,11 @@ function loop(now) {
   ctx.restore();
 
   drawUI();
-  if (state === S_START) drawStart();
+  if (state === S_START) {
+    drawMenu();
+    if (menuSub === "versions") drawVersionsPanel();
+    else if (menuSub === "shop") drawShopPanel();
+  }
   if (state === S_OVER) drawOver();
 
   requestAnimationFrame(loop);
