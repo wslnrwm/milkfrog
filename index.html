@@ -173,8 +173,19 @@ const S_START = 0, S_PLAY = 1, S_OVER = 2;
 let state = S_START;
 
 /* ---- 版本信息（每次更新游戏时：改 GAME_VERSION，并在 VERSION_LOG 顶部加一条） ---- */
-const GAME_VERSION = "v1.1.0";
+const GAME_VERSION = "v1.2.0";
 const VERSION_LOG = [
+  { ver: "v1.2.0", date: "2026-09-28", items: [
+    "新障碍：仙人掌、毒蘑菇、火堆（夜晚专属）",
+    "新道具：闪电冲刺（商店30币，局内1/2/3键购买）",
+    "障碍物天气绑定：蜜蜂飞鸟仅晴天、蘑菇仅雨天、火堆仅夜晚",
+    "金币与障碍物自动避让，不再重叠",
+    "高分难度递增：1000分一档，3000分封顶",
+    "死后复活甲购买（80钱包金币原地复活）",
+    "障碍物重绘：石头/草丛/木桩/蜜蜂，对比度提升",
+    "画面上方道具购买图标，连击移到右上角",
+    "P键呼出菜单，天气楷体居中显示",
+  ] },
   { ver: "v1.1.0", date: "2026-09-27", items: ["初始版本"] },
 ];
 
@@ -193,6 +204,7 @@ let hoverId = null;    // 当前悬停按钮
 const SHOP_ITEMS = [
   { id: "shield", name: "开局护盾",   desc: "下一局开始自带 8 秒护盾", price: 30 },
   { id: "magnet", name: "开局磁铁",   desc: "下一局开始自带 8 秒磁铁", price: 30 },
+  { id: "bolt",   name: "开局闪电",   desc: "下一局开始自带 2 秒冲刺", price: 30 },
   { id: "x2",     name: "双倍金币卡", desc: "下一局金币得分 ×2",      price: 50 },
   { id: "revive", name: "复活甲",     desc: "撞死后原地复活一次",      price: 80 },
 ];
@@ -242,7 +254,11 @@ let nextMilestone = 100;
 let items = [];                // 道具（护盾/磁铁）
 let combo = 0, comboT = 0;     // 连击数 / 连击倒计时（2秒内吃金币续上）
 let shieldT = 0, magnetT = 0;  // 增益剩余秒数
+let boltT = 0;                 // 闪电冲刺剩余秒数（无敌+加速）
 let slowT = 0;                 // 踩水坑减速剩余秒数
+let useCount = { shield: 0, magnet: 0, bolt: 0 };  // 局内购买次数（每局限2次）
+let reviveAsk = false;         // 死后复活甲购买询问中
+let reviveUsed = false;        // 本局是否已复活过
 let itemT = 6.0;               // 道具生成计时
 let themeIdx = 0, themeFrom = 0, themeK = 1;  // 主题切换（草地→池塘→夜晚）
 let weather = 0, weatherT = 30;               // 天气：0晴 1雨 2风
@@ -282,14 +298,17 @@ function startGame() {
   obstacles = []; coins = []; parts = []; popups = [];
   frog.y = GROUND; frog.vy = 0; frog.jumps = 0; frog.deadRot = 0;
   spawnT = 1.5; coinT = 2.2; nextMilestone = 100;
-  items = []; combo = 0; comboT = 0; shieldT = 0; magnetT = 0; slowT = 0; itemT = 6;
+  items = []; combo = 0; comboT = 0; shieldT = 0; magnetT = 0; boltT = 0; slowT = 0; itemT = 6;
   gold2x = false;
   themeIdx = 0; themeFrom = 0; themeK = 1;
   weather = 0; weatherT = rand(25, 40); drops = [];
   // 商店购买的道具：开局自动生效（一次性消耗）
   if (bag.shield > 0) { bag.shield--; shieldT = 8; popup(W / 2, 300, "商店护盾已激活！", "#8fd0ff"); }
   if (bag.magnet > 0) { bag.magnet--; magnetT = 8; popup(W / 2, 336, "商店磁铁已激活！", "#ff9d9d"); }
-  if (bag.x2 > 0)     { bag.x2--;     gold2x = true; popup(W / 2, 372, "双倍金币卡生效！", "#ffd36e"); }
+  if (bag.bolt > 0)   { bag.bolt--;   boltT = 2;   popup(W / 2, 372, "商店闪电已激活！", "#ffe066"); }
+  if (bag.x2 > 0)     { bag.x2--;     gold2x = true; popup(W / 2, 408, "双倍金币卡生效！", "#ffd36e"); }
+  useCount = { shield: 0, magnet: 0, bolt: 0 };
+  reviveAsk = false; reviveUsed = false;
   saveBag();
   sfx.jump();
 }
@@ -304,7 +323,7 @@ function backToMenu() {
   obstacles = []; coins = []; items = []; parts = []; popups = []; drops = [];
   speed = 350;
   frog.y = GROUND; frog.vy = 0; frog.jumps = 0; frog.deadRot = 0;
-  shieldT = 0; magnetT = 0; slowT = 0; combo = 0; comboT = 0; gold2x = false;
+  shieldT = 0; magnetT = 0; boltT = 0; slowT = 0; combo = 0; comboT = 0; gold2x = false;
 }
 
 addEventListener("keydown", (e) => {
@@ -317,7 +336,13 @@ addEventListener("keydown", (e) => {
     e.preventDefault();
     doJump();
   } else if (e.code === "KeyP" && state === S_PLAY) {
-    paused = !paused;
+    setPanel(true);  // P 呼出菜单（自动暂停）
+  } else if (e.code === "Digit1" && state === S_PLAY && !paused) {
+    buyInGame("shield");
+  } else if (e.code === "Digit2" && state === S_PLAY && !paused) {
+    buyInGame("magnet");
+  } else if (e.code === "Digit3" && state === S_PLAY && !paused) {
+    buyInGame("bolt");
   } else if (e.code === "Escape" && state === S_START && menuSub) {
     menuSub = null;  // Esc 关闭子面板
     sfx.eat();
@@ -334,7 +359,7 @@ function btnRect(id) {
   return { x: BTN_X, y: BTN_Y0 + i * (BTN_H + BTN_GAP), w: BTN_W, h: BTN_H };
 }
 function backRect() {  // 子面板"返回"按钮
-  return { x: W / 2 - 80, y: 452, w: 160, h: 52 };
+  return { x: W / 2 - 80, y: 500, w: 160, h: 52 };
 }
 function shopRowRect(i) {  // 商店第 i 行商品
   const p = panelRect();
@@ -345,6 +370,20 @@ function buyRect(i) {      // 商店购买按钮
   return { x: r.x + r.w - 104, y: r.y + 13, w: 92, h: 36 };
 }
 function inRect(p, r) { return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h; }
+
+/* 1/2/3 键购买道具：花本局捡到的金币，每局限2次 */
+function buyInGame(kind) {
+  const price = 30;
+  const names = { shield: "护盾", magnet: "磁铁", bolt: "闪电" };
+  if (useCount[kind] >= 2) { popup(frog.x + 32, frog.y - 112, names[kind] + "本局已用完！", "#ff8a8a"); sfx.hit(); return; }
+  if (coinsGot < price) { popup(frog.x + 32, frog.y - 112, "金币不足 " + coinsGot + "/" + price, "#ff8a8a"); sfx.hit(); return; }
+  coinsGot -= price;
+  useCount[kind]++;
+  if (kind === "shield") { shieldT = 8; sfx.shield(); }
+  else if (kind === "magnet") { magnetT = 8; sfx.magnet(); }
+  else { boltT = 2; sfx.milestone(); }
+  popup(frog.x + 32, frog.y - 112, names[kind] + "生效！", "#7ee081");
+}
 
 function buyItem(i) {
   const it = SHOP_ITEMS[i];
@@ -382,6 +421,13 @@ canvas.addEventListener("mousedown", (e) => {
   e.preventDefault();
   if (menuPanel.classList.contains("show")) { setPanel(false); return; }  // 点面板外先关面板
   if (state === S_START) { menuClick(canvasPoint(e.clientX, e.clientY)); return; }
+  // 游戏结束：优先检测复活甲按钮
+  if (state === S_OVER && reviveAsk && !reviveUsed) {
+    const p = canvasPoint(e.clientX, e.clientY);
+    const bw = 280, bh = 54;
+    const bx = W / 2 - bw / 2, by = H / 2 + 74;
+    if (inRect(p, { x: bx, y: by, w: bw, h: bh })) { buyRevive(); return; }
+  }
   doJump();
 });
 canvas.addEventListener("touchstart", (e) => {
@@ -389,6 +435,12 @@ canvas.addEventListener("touchstart", (e) => {
   if (menuPanel.classList.contains("show")) { setPanel(false); return; }
   const t = e.touches[0];
   if (state === S_START) { menuClick(canvasPoint(t.clientX, t.clientY)); return; }
+  if (state === S_OVER && reviveAsk && !reviveUsed) {
+    const p = canvasPoint(t.clientX, t.clientY);
+    const bw = 280, bh = 54;
+    const bx = W / 2 - bw / 2, by = H / 2 + 74;
+    if (inRect(p, { x: bx, y: by, w: bw, h: bh })) { buyRevive(); return; }
+  }
   doJump();
 }, { passive: false });
 canvas.addEventListener("mousemove", (e) => {
@@ -430,36 +482,54 @@ function popup(x, y, text, color) { popups.push({ x, y, text, color, t: 0 }); }
 function spawnObstacle() {
   const roll = Math.random();
   const hasFlyer = obstacles.some(o => o.type === "bee" || o.type === "bird");
+  const isNight = themeIdx === 2;   // 夜晚主题
+  const isRain = weather === 1;     // 雨天
+  const isSunny = weather === 0;    // 晴天
   let o;
-  if (score() > 15 && roll < 0.11 && !hasFlyer) {
-    // 蜜蜂：悬在头部高度，必须贴地跑
+  if (isSunny && score() > 15 && roll < 0.11 && !hasFlyer) {
+    // 蜜蜂：悬在头部高度，必须贴地跑（仅晴天）
     o = { type: "bee", x: W + 60, y: GROUND - 118, w: 46, h: 36, wingT: 0 };
-  } else if (score() > 60 && roll < 0.23 && !hasFlyer) {
-    // 飞鸟：低档需跳过，高档需贴地跑（与蜜蜂不同屏出现）
+  } else if (isSunny && score() > 60 && roll < 0.23 && !hasFlyer) {
+    // 飞鸟：低档需跳过，高档需贴地跑（仅晴天）
     const high = Math.random() < 0.45;
     const by = GROUND - (high ? 132 : 58);
     o = { type: "bird", x: W + 60, y: by, baseY: by, w: 52, h: 42, wingT: rand(0, 6) };
   } else if (score() > 30 && roll < 0.35) {
     // 水坑：踩中不死，但减速并清空连击
     o = { type: "puddle", x: W + 60, y: GROUND, w: rand(74, 112), h: 12, rip: rand(0, 1), hit: false };
-  } else if (roll < 0.55) {
+  } else if (roll < 0.46) {
     o = { type: "rock", x: W + 60, y: GROUND, w: 44, h: 34 };
-  } else if (roll < 0.71) {
+  } else if (roll < 0.56) {
     o = { type: "rock2", x: W + 60, y: GROUND, w: 46, h: 58 };
-  } else if (roll < 0.87) {
+  } else if (roll < 0.66) {
     o = { type: "stump", x: W + 60, y: GROUND, w: 58, h: 66 };
-  } else {
+  } else if (roll < 0.74) {
     o = { type: "bush", x: W + 60, y: GROUND, w: 76, h: 44 };
+  } else if (roll < 0.82) {
+    // 仙人掌：高瘦，需要更早起跳
+    o = { type: "cactus", x: W + 60, y: GROUND, w: 52, h: 92 };
+  } else if (roll < 0.90 && isRain) {
+    // 毒蘑菇：仅雨天出现，第一次中毒减速，第二次才死
+    o = { type: "shroom", x: W + 60, y: GROUND, w: 78, h: 40, poison: 0 };
+  } else if (roll < 0.96 && isNight) {
+    // 火堆：仅夜晚出现，发光暖色障碍
+    o = { type: "fire", x: W + 60, y: GROUND, w: 58, h: 50 };
+  } else {
+    // 兜底：不满足特殊条件时出石头
+    o = { type: "rock", x: W + 60, y: GROUND, w: 44, h: 34 };
   }
   obstacles.push(o);
 }
 
 /* ---- 道具生成：护盾 / 磁铁（30% 概率一次出两个） ---- */
 function spawnItem() {
-  const kind = Math.random() < 0.5 ? "shield" : "magnet";
+  // 三选一，且避免与场上已有道具同种（防止相同道具靠太近）
+  const pool = ["shield", "magnet", "bolt"].filter(k => !items.some(it => it.kind === k));
+  if (!pool.length) return;
+  const kind = pool[Math.floor(Math.random() * pool.length)];
   items.push({ kind, x: W + 60, y: GROUND - rand(70, 150), t: rand(0, 6) });
-  if (Math.random() < 0.3) {
-    const k2 = Math.random() < 0.5 ? "shield" : "magnet";
+  if (Math.random() < 0.3 && pool.length > 1) {
+    const k2 = pool.filter(k => k !== kind)[Math.floor(Math.random() * (pool.length - 1))];
     items.push({ kind: k2, x: W + 240, y: GROUND - rand(70, 150), t: rand(0, 6) });
   }
 }
@@ -468,7 +538,19 @@ function spawnCoins() {
   const high = Math.random() < 0.4;             // 高空一排需要二段跳
   const y = GROUND - (high ? rand(150, 195) : rand(80, 120));
   const gold = Math.random() < 0.12;            // 稀有大金币
-  const startX = W + 60 + rand(0, 120);
+  let startX = W + 60 + rand(0, 120);
+  let endX = startX + (n - 1) * 48 + 30;
+  // 避让：如果金币排与障碍物 x 区间重叠，整体右移直到不重叠
+  const minGap = 80;
+  let attempts = 0;
+  while (attempts < 6) {
+    const blocked = obstacles.some(o => startX < o.x + o.w + minGap && endX > o.x - minGap);
+    if (!blocked) break;
+    startX += 110;
+    endX = startX + (n - 1) * 48 + 30;
+    attempts++;
+  }
+  if (attempts >= 6) return; // 实在避不开就放弃这排
   for (let i = 0; i < n; i++)
     coins.push({ x: startX + i * 48, y: y + Math.sin(i) * 10, r: 11, gold, t: Math.random() * 6 });
 }
@@ -543,8 +625,9 @@ function update(dt) {
 
   // 速度与距离（踩水坑临时减速）
   speed = Math.min(350 + dist * 0.014, 780);
-  const spd = speed * (slowT > 0 ? 0.7 : 1);
+  const spd = speed * (slowT > 0 ? 0.7 : 1) * (boltT > 0 ? 1.8 : 1);
   if (slowT > 0) slowT -= dt;
+  if (boltT > 0) boltT -= dt;
   dist += spd * dt;
   const sc = score();
   if (sc >= nextMilestone) {
@@ -578,13 +661,18 @@ function update(dt) {
   } else frog.onGround = false;
   frog.runT += dt * (frog.onGround ? spd * 0.05 : 2.2);
 
-  // 生成（间距随速度微缩，但保证可跳过）
+  // 生成（间距随速度微缩，高分更难）
+  const diff = Math.min(score() / 1000, 3);  // 1000 分一档，3000 封顶
   spawnT -= dt;
-  if (spawnT <= 0) { spawnObstacle(); spawnT = rand(0.95, 1.6) * Math.pow(350 / speed, 0.4); }
+  if (spawnT <= 0) {
+    spawnObstacle();
+    const tight = Math.max(0.72, 1 - diff * 0.10);  // 间距系数 1.0→0.72（更宽松）
+    spawnT = rand(1.05, 1.75) * Math.pow(350 / speed, 0.4) * tight;
+  }
   coinT -= dt;
   if (coinT <= 0) { spawnCoins(); coinT = rand(2.6, 4.6); }
   itemT -= dt;
-  if (itemT <= 0) { spawnItem(); itemT = rand(9, 13); }
+  if (itemT <= 0) { spawnItem(); itemT = rand(9, 13) * (1 + diff * 0.35); }
 
   // 障碍移动与碰撞
   const fb = frogBox();
@@ -611,7 +699,15 @@ function update(dt) {
       continue;
     }
     if (overlap(fb.x, fb.y, fb.w, fb.h, o.x + 6, o.y - o.h + 4, o.w - 12, o.h - 6)) {
-      if (shieldT > 0) {
+      if (boltT > 0) {
+        // 闪电冲刺：撞碎障碍不受伤
+        o.dead = true;
+        shakeT = 0.15;
+        sfx.crack();
+        puff(o.x + o.w / 2, o.y - o.h / 2, "#ffe066", 16);
+        puff(o.x + o.w / 2, o.y - o.h / 2, "#ffffff", 10);
+        popup(frog.x + 32, frog.y - 108, "冲刺粉碎！", "#ffe066");
+      } else if (shieldT > 0) {
         // 护盾抵挡：障碍碎裂，不结束游戏
         shieldT = 0;
         o.dead = true;
@@ -620,6 +716,22 @@ function update(dt) {
         puff(o.x + o.w / 2, o.y - o.h / 2, "#bfe3ff", 18);
         puff(o.x + o.w / 2, o.y - o.h / 2, "#ffffff", 10);
         popup(frog.x + 32, frog.y - 108, "护盾抵挡！", "#8fd0ff");
+      } else if (o.type === "shroom" && o.poison < 1) {
+        // 毒蘑菇第一次：中毒减速，蘑菇变灰
+        o.poison = 1;
+        o.dead = true;
+        slowT = 2.2;
+        shakeT = 0.2;
+        sfx.splash();
+        puff(o.x + o.w / 2, o.y - o.h / 2, "#b04a7a", 16);
+        puff(o.x + o.w / 2, o.y - o.h / 2, "#e0a0c8", 10);
+        popup(frog.x + 32, frog.y - 108, "中毒减速！", "#b04a7a");
+        if (combo >= 2) popup(frog.x + 32, frog.y - 134, "连击中断", "#9fb7c8");
+        combo = 0; comboT = 0;
+      } else if (o.type === "shroom" && o.poison >= 1) {
+        // 毒蘑菇第二次：直接撞死
+        die();
+        return;
       } else {
         die();
         return;
@@ -636,7 +748,8 @@ function update(dt) {
       it.got = true;
       sparkle(it.x, iy);
       if (it.kind === "shield") { shieldT = 8; popup(it.x, iy - 26, "护盾！", "#8fd0ff"); sfx.shield(); }
-      else { magnetT = 8; popup(it.x, iy - 26, "磁铁！", "#ff9d9d"); sfx.magnet(); }
+      else if (it.kind === "magnet") { magnetT = 8; popup(it.x, iy - 26, "磁铁！", "#ff9d9d"); sfx.magnet(); }
+      else { boltT = 2; popup(it.x, iy - 26, "闪电冲刺！", "#ffe066"); sfx.milestone(); }
     }
   }
   items = items.filter(it => !it.got && it.x > -40);
@@ -676,15 +789,20 @@ function update(dt) {
 }
 
 function die() {
-  // 复活甲：消耗一次，原地复活并给 2.5 秒保护盾
-  if (bag.revive > 0) {
+  // 复活甲（商店预购）：消耗一次，原地复活并给 2.5 秒保护盾
+  if (bag.revive > 0 && !reviveUsed) {
     bag.revive--; saveBag();
+    reviveUsed = true;
     shieldT = 2.5;
     frog.vy = 0; frog.jumps = 0;
     sparkle(frog.x + 32, frog.y - 44);
     popup(frog.x + 32, frog.y - 112, "复活甲生效！", "#ffd36e");
     sfx.shield();
     return;
+  }
+  // 没有预购复活甲：若本局未复活过，弹购买询问
+  if (!reviveUsed) {
+    reviveAsk = true;
   }
   state = S_OVER;
   overT = 0;
@@ -696,6 +814,22 @@ function die() {
     best = sc;
     localStorage.setItem("milkfrog-best", best);
   }
+}
+
+/* 死后购买复活甲（80 币，钱包支付，原地复活） */
+function buyRevive() {
+  if (bank < 80) { popup(W / 2, 380, "钱包不足 80 金币！", "#ff8a8a"); sfx.hit(); return; }
+  bank -= 80; saveBank();
+  reviveUsed = true; reviveAsk = false;
+  state = S_PLAY;
+  shieldT = 2.5;
+  frog.vy = 0; frog.jumps = 0; frog.y = GROUND; frog.deadRot = 0;
+  // 清掉身边的障碍物，避免复活瞬间又撞死
+  for (const o of obstacles) if (o.x < frog.x + 300 && o.x + o.w > frog.x - 60) o.dead = true;
+  obstacles = obstacles.filter(o => !o.dead);
+  sparkle(frog.x + 32, frog.y - 44);
+  popup(frog.x + 32, frog.y - 112, "复活甲生效！", "#ffd36e");
+  sfx.shield();
 }
 
 /* ================= 绘制 ================= */
@@ -873,34 +1007,211 @@ function drawObstacle(o) {
   ctx.translate(o.x, o.y);
   if (o.type === "rock" || o.type === "rock2") {
     const h = o.h, w = o.w;
-    ctx.fillStyle = "#9a958c";
+    // 改进版：深灰多面体 + 高光边 + 底部阴影线
+    const cx = w * 0.5;
+    ctx.fillStyle = "#69655c";
     ctx.beginPath();
-    ctx.moveTo(0, 0); ctx.lineTo(w * .12, -h * .8); ctx.lineTo(w * .5, -h);
-    ctx.lineTo(w * .88, -h * .7); ctx.lineTo(w, 0); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = "#b5b0a6";
+    ctx.moveTo(0, 0);
+    ctx.lineTo(w * 0.08, -h * 0.75);
+    ctx.lineTo(w * 0.3, -h * 0.95);
+    ctx.lineTo(w * 0.55, -h);
+    ctx.lineTo(w * 0.82, -h * 0.88);
+    ctx.lineTo(w * 0.95, -h * 0.5);
+    ctx.lineTo(w, -h * 0.1);
+    ctx.lineTo(w, 0);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#46443e"; ctx.lineWidth = 2; ctx.stroke();
+
+    // 内部块面（明暗）
+    ctx.fillStyle = "#827d74";
     ctx.beginPath();
-    ctx.moveTo(w * .5, -h); ctx.lineTo(w * .88, -h * .7); ctx.lineTo(w * .62, -h * .35); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = "#6fae4e"; // 顶上小草
-    ctx.beginPath(); ctx.ellipse(w * .5, -h + 2, 10, 5, 0, 0, 7); ctx.fill();
+    ctx.moveTo(w * 0.08, -h * 0.75); ctx.lineTo(w * 0.3, -h * 0.95);
+    ctx.lineTo(w * 0.55, -h); ctx.lineTo(w * 0.4, -h * 0.6);
+    ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle = "#8e8a80";
+    ctx.beginPath();
+    ctx.moveTo(w * 0.4, -h * 0.6); ctx.lineTo(w * 0.55, -h);
+    ctx.lineTo(w * 0.82, -h * 0.88); ctx.lineTo(w * 0.75, -h * 0.45);
+    ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle = "#a8a398";
+    ctx.beginPath();
+    ctx.moveTo(w * 0.3, -h * 0.95); ctx.lineTo(w * 0.55, -h);
+    ctx.lineTo(w * 0.82, -h * 0.88); ctx.lineTo(w * 0.75, -h * 0.45);
+    ctx.lineTo(w * 0.5, -h * 0.55);
+    ctx.closePath(); ctx.fill();
+
+    // 高光边缘
+    ctx.strokeStyle = "#c8c3b9"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(w * 0.08, -h * 0.75); ctx.lineTo(w * 0.3, -h * 0.95);
+    ctx.moveTo(w * 0.3, -h * 0.95); ctx.lineTo(w * 0.55, -h);
+    ctx.stroke();
+
+    // 底部阴影线
+    ctx.strokeStyle = "#504e48"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(w, 0); ctx.stroke();
   } else if (o.type === "stump") {
+    // 改进版：年轮纹理 + 木纹 + 底部投影
+    const w = o.w, h = o.h;
+    // 底部阴影
+    ctx.fillStyle = "rgba(0,0,0,.25)";
+    ctx.beginPath(); ctx.ellipse(w / 2, 4, w / 2 + 4, 6, 0, 0, 7); ctx.fill();
+
+    // 桩身左右明暗
+    ctx.fillStyle = "#8c6842";
+    ctx.fillRect(4, -h + 4, w - 8, h - 4);
     ctx.fillStyle = "#7a5a3a";
-    ctx.fillRect(4, -o.h, o.w - 8, o.h);
-    ctx.fillStyle = "#8f6c46";
-    ctx.beginPath(); ctx.ellipse(o.w / 2, -o.h, o.w / 2 - 4, 8, 0, 0, 7); ctx.fill();
+    ctx.fillRect(4, -h + 4, (w - 8) / 2, h - 4);
+    ctx.strokeStyle = "#5a4228"; ctx.lineWidth = 2;
+    ctx.strokeRect(4, -h + 4, w - 8, h - 4);
+
+    // 木纹竖线
+    ctx.strokeStyle = "#694e32"; ctx.lineWidth = 1;
+    for (let i = 1; i <= 3; i++) {
+      const lx = 10 + (w - 20) * i / 4;
+      ctx.beginPath(); ctx.moveTo(lx, -h + 8); ctx.lineTo(lx, -4); ctx.stroke();
+    }
+
+    // 顶部年轮
+    ctx.fillStyle = "#a88458";
+    ctx.beginPath(); ctx.ellipse(w / 2, -h, w / 2 - 4, 10, 0, 0, 7); ctx.fill();
     ctx.strokeStyle = "#6b4d30"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.ellipse(o.w / 2, -o.h, o.w / 2 - 12, 4.5, 0, 0, 7); ctx.stroke();
-    // 蘑菇装饰
-    ctx.fillStyle = "#e05b4b";
-    ctx.beginPath(); ctx.arc(o.w - 14, -o.h - 2, 8, Math.PI, 0); ctx.fill();
-    ctx.fillStyle = "#fff2e0";
-    ctx.fillRect(o.w - 17, -o.h - 2, 6, 6);
+    ctx.beginPath(); ctx.ellipse(w / 2, -h, w / 2 - 4, 10, 0, 0, 7); ctx.stroke();
+
+    // 年轮圈
+    ctx.strokeStyle = "#8c6844"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.ellipse(w / 2, -h + 1, w / 2 - 12, 5, 0, 0, 7); ctx.stroke();
+    ctx.strokeStyle = "#7d5c3c"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.ellipse(w / 2, -h + 2, w / 2 - 20, 2, 0, 0, 7); ctx.stroke();
+
+    // 蘑菇（更立体）
+    ctx.fillStyle = "#dc5546";
+    ctx.beginPath(); ctx.arc(w - 15, -h - 2, 9, Math.PI, 0); ctx.fill();
+    ctx.strokeStyle = "#aa372b"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(w - 15, -h - 2, 9, Math.PI, 0); ctx.stroke();
+    ctx.fillStyle = "#ffdcdc";
+    ctx.beginPath(); ctx.ellipse(w - 19, -h - 6, 3, 2, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = "#f5ebd7";
+    ctx.fillRect(w - 18, -h - 2, 6, 6);
+    ctx.strokeStyle = "#c8b9aa"; ctx.lineWidth = 1;
+    ctx.strokeRect(w - 18, -h - 2, 6, 6);
   } else if (o.type === "bush") {
-    ctx.fillStyle = "#4e8f3d";
+    // 改进版：三层立体 + 深色描边 + 高光
+    const h = o.h || 34;
+    // 底层（深绿+描边）
+    ctx.fillStyle = "#376e2d"; ctx.strokeStyle = "#234b1e"; ctx.lineWidth = 2;
+    for (const [cx, cy, r] of [[16, -h + 14, 17], [38, -h + 8, 20], [60, -h + 14, 16]]) {
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill(); ctx.stroke();
+    }
+    // 中层
+    ctx.fillStyle = "#559b46";
+    for (const [cx, cy, r] of [[14, -h + 12, 15], [40, -h + 6, 18], [58, -h + 12, 14]]) {
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
+    }
+    // 顶层（亮）
+    ctx.fillStyle = "#78be5f";
+    for (const [cx, cy, r] of [[16, -h + 10, 13], [38, -h + 4, 15], [60, -h + 10, 12]]) {
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
+    }
+    // 高光弧
+    ctx.strokeStyle = "#b4dc96"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(16, -h + 10, 8, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+    // 红果
+    ctx.fillStyle = "#e65050"; ctx.strokeStyle = "#b43232"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(17, -h - 1, 3.5, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(45, -h - 5, 3.5, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#ffc8c8";
+    ctx.beginPath(); ctx.arc(17.5, -h - 2.5, 1.2, 0, 7); ctx.fill();
+  } else if (o.type === "cactus") {
+    const h = o.h, w = o.w;
+    ctx.fillStyle = "rgba(0,0,0,.30)";
+    ctx.beginPath(); ctx.ellipse(w / 2, 3, w / 2 + 5, 5, 0, 0, 7); ctx.fill();
+    // 主干
+    ctx.fillStyle = "#2e7d4d";
+    ctx.strokeStyle = "#1a5c36"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(8, -h * 0.78, w - 16, h * 0.78, 10); ctx.fill(); ctx.stroke();
+    // 左臂
+    ctx.beginPath(); ctx.roundRect(-8, -h * 0.62, 18, h * 0.22, 7); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.roundRect(-10, -h * 0.78, 14, h * 0.26, 6); ctx.fill(); ctx.stroke();
+    // 右臂
+    ctx.beginPath(); ctx.roundRect(w - 12, -h * 0.54, 18, h * 0.22, 7); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.roundRect(w - 14, -h * 0.70, 14, h * 0.26, 6); ctx.fill(); ctx.stroke();
+    // 竖纹
+    ctx.strokeStyle = "#1a5c36"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(w * 0.38, -h * 0.92); ctx.lineTo(w * 0.38, -h * 0.08); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(w * 0.52, -h * 0.92); ctx.lineTo(w * 0.52, -h * 0.08); ctx.stroke();
+    // 刺（浅色三角）
+    ctx.fillStyle = "#e6eec8";
+    for (const [sx, sy] of [[12, -70], [28, -60], [14, -40], [26, -25], [18, -80], [36, -32]]) {
+      ctx.beginPath();
+      ctx.moveTo(sx, sy); ctx.lineTo(sx - 4, sy + 6); ctx.lineTo(sx + 1, sy + 5);
+      ctx.closePath(); ctx.fill();
+    }
+    // 顶部小花
+    ctx.fillStyle = "#f088a0";
+    ctx.beginPath(); ctx.ellipse(w / 2, -h + 4, 7, 5, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = "#ffd8e0";
+    ctx.beginPath(); ctx.ellipse(w / 2, -h + 4, 2, 1.5, 0, 0, 7); ctx.fill();
+  } else if (o.type === "shroom") {
+    const h = o.h, w = o.w;
+    ctx.fillStyle = "rgba(0,0,0,.30)";
+    ctx.beginPath(); ctx.ellipse(w / 2, 3, w / 2 + 5, 5, 0, 0, 7); ctx.fill();
+    // 柄
+    ctx.fillStyle = "#f5ebd7";
+    ctx.beginPath(); ctx.roundRect(w * 0.32, -h * 0.42, w * 0.36, h * 0.42, 7); ctx.fill();
+    ctx.strokeStyle = "#c8b9a2"; ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // 伞（紫红半圆）
+    ctx.fillStyle = "#b04a7a";
+    ctx.strokeStyle = "#82345e"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(w / 2, -h * 0.35, w * 0.38, Math.PI, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+    // 伞阴影层
+    ctx.fillStyle = "#c45e8c";
+    ctx.beginPath(); ctx.arc(w / 2, -h * 0.32, w * 0.34, Math.PI, 0); ctx.closePath(); ctx.fill();
+    // 白点
+    ctx.fillStyle = "#faf2ed";
+    for (const [dx, dy, r] of [[0.27, 0.65, 5], [0.50, 0.72, 6], [0.70, 0.62, 4], [0.40, 0.50, 3.5], [0.60, 0.46, 4]]) {
+      ctx.beginPath(); ctx.arc(dx * w, -dy * h, r, 0, 7); ctx.fill();
+    }
+    // 高光
+    ctx.strokeStyle = "#e6a4c4"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(w * 0.45, -h * 0.58, w * 0.22, Math.PI * 0.1, Math.PI * 0.45); ctx.stroke();
+  } else if (o.type === "fire") {
+    const h = o.h, w = o.w;
+    // 光晕
+    ctx.fillStyle = "rgba(255,160,60,.18)";
+    ctx.beginPath(); ctx.ellipse(w / 2, -h * 0.4, w * 0.55, h * 0.5, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = "rgba(255,180,80,.22)";
+    ctx.beginPath(); ctx.ellipse(w / 2, -h * 0.4, w * 0.42, h * 0.38, 0, 0, 7); ctx.fill();
+    // 木柴交叉
+    ctx.strokeStyle = "#6e5032"; ctx.lineWidth = 9; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(w * 0.08, -h * 0.04); ctx.lineTo(w * 0.90, -h * 0.26); ctx.stroke();
+    ctx.strokeStyle = "#8c6842"; ctx.lineWidth = 9; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(w * 0.08, -h * 0.26); ctx.lineTo(w * 0.90, -h * 0.04); ctx.stroke();
+    // 柴头
+    ctx.fillStyle = "#5a4228";
+    ctx.beginPath(); ctx.arc(w * 0.08, -h * 0.12, 5, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(w * 0.92, -h * 0.14, 5, 0, 7); ctx.fill();
+    // 火焰三层
+    ctx.fillStyle = "#e04028";
     ctx.beginPath();
-    ctx.arc(16, -14, 16, 0, 7); ctx.arc(38, -20, 19, 0, 7);
-    ctx.arc(60, -14, 15, 0, 7); ctx.fill();
-    ctx.fillStyle = "#d95f5f"; // 小刺果
-    ctx.beginPath(); ctx.arc(20, -24, 3.4, 0, 7); ctx.arc(48, -30, 3.4, 0, 7); ctx.fill();
+    ctx.moveTo(w * 0.20, -h * 0.18); ctx.lineTo(w * 0.48, -h * 0.88); ctx.lineTo(w * 0.78, -h * 0.18);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#f88c28";
+    ctx.beginPath();
+    ctx.moveTo(w * 0.28, -h * 0.18); ctx.lineTo(w * 0.50, -h * 0.72); ctx.lineTo(w * 0.72, -h * 0.18);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#ffe05a";
+    ctx.beginPath();
+    ctx.moveTo(w * 0.36, -h * 0.18); ctx.lineTo(w * 0.52, -h * 0.56); ctx.lineTo(w * 0.66, -h * 0.18);
+    ctx.closePath(); ctx.fill();
+    // 火苗尖
+    ctx.fillStyle = "#f88c28";
+    ctx.beginPath();
+    ctx.moveTo(w * 0.46, -h * 0.76); ctx.lineTo(w * 0.52, -h * 0.96); ctx.lineTo(w * 0.56, -h * 0.72);
+    ctx.closePath(); ctx.fill();
   } else if (o.type === "bird") {
     const fl = Math.sin(o.wingT) * 9;
     const cy0 = -o.h / 2; // 身体中心
@@ -947,18 +1258,61 @@ function drawObstacle(o) {
     ctx.stroke();
   } else if (o.type === "bee") {
     const wt = o.wingT;
-    ctx.fillStyle = "rgba(220,235,255,.8)";
+    // 改进版：透明翅膀 + 大眼 + 触角 + 毒刺
+    // 后翅膀（半透明）
+    ctx.fillStyle = "rgba(200,225,250,.55)";
     ctx.beginPath();
-    ctx.ellipse(14, -o.h + 6, 12, 5 + Math.sin(wt) * 3, -0.5, 0, 7);
+    ctx.ellipse(10, -o.h + 4, 13, 5 + Math.sin(wt) * 3, -0.6, 0, 7);
     ctx.fill();
-    ctx.fillStyle = "#f2c435";
-    ctx.beginPath(); ctx.ellipse(20, -o.h + 14, 18, 13, 0, 0, 7); ctx.fill();
-    ctx.fillStyle = "#3a3226";
-    ctx.fillRect(12, -o.h + 3, 6, 22);
-    ctx.fillRect(24, -o.h + 5, 6, 19);
-    ctx.beginPath(); ctx.arc(38, -o.h + 12, 7, 0, 7); ctx.fill();
+    ctx.strokeStyle = "rgba(170,200,240,.7)"; ctx.lineWidth = 1;
+    ctx.stroke();
+    // 前翅膀（稍大）
+    ctx.fillStyle = "rgba(220,240,255,.65)";
+    ctx.beginPath();
+    ctx.ellipse(16, -o.h - 4, 15, 6 + Math.sin(wt) * 3, 0.35, 0, 7);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(180,210,245,.7)"; ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // 身体（椭圆+条纹）
+    ctx.fillStyle = "#fad750";
+    ctx.beginPath(); ctx.ellipse(22, -o.h + 22, 19, 13, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = "#c8a028"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(22, -o.h + 22, 19, 13, 0, 0, 7); ctx.stroke();
+    // 黑条纹
+    ctx.fillStyle = "#3c3428";
+    ctx.fillRect(13, -o.h + 10, 6, 24);
+    ctx.fillRect(25, -o.h + 11, 6, 22);
+    // 身体高光
+    ctx.fillStyle = "rgba(255,255,255,.35)";
+    ctx.beginPath(); ctx.ellipse(14, -o.h + 14, 5, 3, -0.3, 0, 7); ctx.fill();
+
+    // 头（黑色圆）
+    ctx.fillStyle = "#322d23";
+    ctx.beginPath(); ctx.arc(42, -o.h + 18, 8, 0, 7); ctx.fill();
+    ctx.strokeStyle = "#1e1c16"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(42, -o.h + 18, 8, 0, 7); ctx.stroke();
+    // 大眼睛（更可爱）
     ctx.fillStyle = "#fff";
-    ctx.beginPath(); ctx.arc(40, -o.h + 10, 2.4, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(44, -o.h + 16, 3.5, 0, 7); ctx.fill();
+    ctx.fillStyle = "#1e1e1e";
+    ctx.beginPath(); ctx.arc(45, -o.h + 17, 1.8, 0, 7); ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(45.5, -o.h + 16.2, 0.7, 0, 7); ctx.fill();
+    // 触角
+    ctx.strokeStyle = "#322d23"; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(40, -o.h + 10); ctx.lineTo(44, -o.h + 2);
+    ctx.moveTo(36, -o.h + 10); ctx.lineTo(38, -o.h + 2);
+    ctx.stroke();
+    ctx.fillStyle = "#322d23";
+    ctx.beginPath(); ctx.arc(44, -o.h + 1, 1.5, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(38, -o.h + 1, 1.5, 0, 7); ctx.fill();
+    // 毒刺
+    ctx.fillStyle = "#50463c";
+    ctx.beginPath();
+    ctx.moveTo(3, -o.h + 18); ctx.lineTo(-7, -o.h + 22); ctx.lineTo(3, -o.h + 26);
+    ctx.closePath(); ctx.fill();
   }
   ctx.restore();
 }
@@ -1195,7 +1549,8 @@ function drawStar(x, y, r, n) {
 function drawItems() {
   for (const it of items) {
     const y = it.y + Math.sin(it.t * 3) * 6;
-    ctx.fillStyle = it.kind === "shield" ? "rgba(120,200,255,.20)" : "rgba(255,130,130,.20)";
+    const glowColor = it.kind === "shield" ? "rgba(120,200,255,.20)" : it.kind === "magnet" ? "rgba(255,130,130,.20)" : "rgba(255,220,80,.22)";
+    ctx.fillStyle = glowColor;
     ctx.beginPath(); ctx.arc(it.x, y, 25, 0, 7); ctx.fill();
     if (it.kind === "shield") {
       ctx.fillStyle = "rgba(140,205,255,.6)";
@@ -1214,7 +1569,7 @@ function drawItems() {
       ctx.fillStyle = "#4a9fe0";
       ctx.fillRect(it.x - 1.4, y - 3, 2.8, 6);
       ctx.fillRect(it.x - 3.5, y - 0.5, 7, 2.4);
-    } else {
+    } else if (it.kind === "magnet") {
       // U形磁铁
       ctx.strokeStyle = "#e05555"; ctx.lineWidth = 7.5; ctx.lineCap = "butt";
       ctx.beginPath(); ctx.arc(it.x, y - 2, 9.5, Math.PI, 0); ctx.stroke();
@@ -1225,6 +1580,22 @@ function drawItems() {
       ctx.fillStyle = "#f5f5f5";
       ctx.fillRect(it.x - 13.2, y + 6, 7.4, 4.6);
       ctx.fillRect(it.x + 5.8, y + 6, 7.4, 4.6);
+    } else {
+      // 闪电冲刺：金色光晕 + 闪电
+      ctx.fillStyle = "rgba(255,220,90,.45)";
+      ctx.beginPath(); ctx.arc(it.x, y, 16, 0, 7); ctx.fill();
+      ctx.fillStyle = "#ffcd28";
+      ctx.strokeStyle = "#c89614"; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(it.x + 5, y - 14);
+      ctx.lineTo(it.x - 7, y + 2);
+      ctx.lineTo(it.x - 1, y + 2);
+      ctx.lineTo(it.x - 6, y + 14);
+      ctx.lineTo(it.x + 8, y - 2);
+      ctx.lineTo(it.x + 1, y - 2);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = "rgba(255,244,180,.9)"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(it.x + 5, y - 14); ctx.lineTo(it.x - 7, y + 2); ctx.stroke();
     }
   }
 }
@@ -1250,6 +1621,20 @@ function drawBuffs() {
     ctx.setLineDash([9, 11]);
     ctx.lineDashOffset = -elapsed * 60;
     ctx.beginPath(); ctx.arc(cx, cy, 96, 0, 7); ctx.stroke();
+    ctx.restore();
+  }
+  if (boltT > 0) {
+    // 闪电冲刺：金色速度线 + 环绕电弧
+    ctx.save();
+    ctx.strokeStyle = `rgba(255,220,90,${0.5 + Math.sin(elapsed * 20) * 0.2})`;
+    ctx.lineWidth = 2.5;
+    for (let i = 0; i < 3; i++) {
+      const yy = cy - 18 + i * 18 + Math.sin(elapsed * 14 + i * 2) * 3;
+      ctx.beginPath();
+      ctx.moveTo(cx - frog.w * 1.5 - i * 14, yy);
+      ctx.lineTo(cx - frog.w * 0.6 - i * 8, yy);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 }
@@ -1319,21 +1704,61 @@ function drawUI() {
   ctx.fillStyle = "rgba(255,255,255,.9)";
   ctx.fillText("金币 " + coinsGot + (gold2x ? "  ×2" : ""), 48, 96);
   ctx.fillText("钱包 " + bank, 48, 118);
+  // 画面上方：三个可购买道具图标
+  if (state === S_PLAY) {
+    const icons = [
+      { id: "shield", key: "1", name: "护盾", color: "#8fd0ff", bg: "rgba(140,205,255,.18)" },
+      { id: "magnet", key: "2", name: "磁铁", color: "#ff9d9d", bg: "rgba(255,130,130,.18)" },
+      { id: "bolt",   key: "3", name: "闪电", color: "#ffe066", bg: "rgba(255,220,80,.18)" },
+    ];
+    const iconW = 72, iconH = 56, gap = 16;
+    const totalW = icons.length * iconW + (icons.length - 1) * gap;
+    const startX = W / 2 - totalW / 2;
+    const topY = 14;
+    ctx.font = "bold 15px 'Microsoft YaHei', sans-serif";
+    for (let i = 0; i < icons.length; i++) {
+      const it = icons[i];
+      const used = useCount[it.id];
+      const canUse = used < 2 && coinsGot >= 30;
+      const x = startX + i * (iconW + gap);
+      // 背景框
+      ctx.fillStyle = canUse ? it.bg : "rgba(120,120,120,.12)";
+      rr(x, topY, iconW, iconH, 10); ctx.fill();
+      ctx.strokeStyle = canUse ? it.color : "rgba(150,150,150,.4)";
+      ctx.lineWidth = 1.6; ctx.stroke();
+      // 图标
+      ctx.globalAlpha = used >= 2 ? 0.3 : (canUse ? 1 : 0.55);
+      shopIcon(it.id, x + iconW / 2, topY + 21);
+      ctx.globalAlpha = 1;
+      // 快捷键 + 剩余次数
+      ctx.fillStyle = canUse ? "#fff" : "rgba(255,255,255,.5)";
+      ctx.textAlign = "center";
+      ctx.fillText(it.key, x + 12, topY + 19);
+      ctx.font = "12px 'Microsoft YaHei', sans-serif";
+      ctx.fillText((2 - used) + "次", x + iconW / 2, topY + 50);
+      ctx.font = "bold 15px 'Microsoft YaHei', sans-serif";
+    }
+  }
 
   // 连击指示
   let uy = 146;
   if (combo >= 2 && comboT > 0 && state === S_PLAY) {
     ctx.font = "bold 21px 'Microsoft YaHei', sans-serif";
-    ctx.strokeStyle = "rgba(0,0,0,.4)"; ctx.lineWidth = 4;
+    ctx.textAlign = "right";
     const txt = "连击 x" + combo + (combo >= 5 ? "  分数翻倍" : "");
-    ctx.strokeText(txt, 26, uy);
+    const cx = W - 26;  // 右上角
+    ctx.strokeStyle = "rgba(0,0,0,.4)"; ctx.lineWidth = 4;
+    ctx.strokeText(txt, cx, uy);
     ctx.fillStyle = combo >= 5 ? "#ff9d2e" : "#ffe37a";
-    ctx.fillText(txt, 26, uy);
+    ctx.fillText(txt, cx, uy);
+    // 倒计时条：右对齐，向左缩短
+    const barW = 74;
     ctx.fillStyle = "rgba(0,0,0,.25)";
-    ctx.fillRect(26, uy + 8, 74, 5);
+    ctx.fillRect(cx - barW, uy + 8, barW, 5);
     ctx.fillStyle = combo >= 5 ? "#ff9d2e" : "#ffd34d";
-    ctx.fillRect(26, uy + 8, 74 * Math.min(1, comboT / 2), 5);
-    uy += 36;
+    const fillW = barW * Math.min(1, comboT / 2);
+    ctx.fillRect(cx - fillW, uy + 8, fillW, 5);
+    ctx.textAlign = "left";
   }
 
   // 增益状态与天气
@@ -1355,8 +1780,22 @@ function drawUI() {
       ctx.fillText("磁铁 " + Math.max(0, magnetT).toFixed(1) + "s", 48, uy + 7);
       uy += 24;
     }
-    ctx.fillStyle = "rgba(255,255,255,.75)";
-    ctx.fillText("天气：" + ["晴", "雨", "风"][weather], 26, uy + 6);
+    if (boltT > 0) {
+      ctx.fillStyle = "rgba(255,205,40,.95)";
+      ctx.beginPath(); ctx.arc(33, uy + 2, 8, 0, 7); ctx.fill();
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.6; ctx.stroke();
+      ctx.fillStyle = "rgba(255,255,255,.95)";
+      ctx.fillText("冲刺 " + Math.max(0, boltT).toFixed(1) + "s", 48, uy + 7);
+      uy += 24;
+    }
+  }
+  // 天气：画面上方居中，楷体
+  if (state === S_PLAY) {
+    ctx.font = "italic 17px KaiTi, 'Microsoft YaHei', sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,.72)";
+    ctx.textAlign = "center";
+    ctx.fillText("· " + ["晴", "雨", "风"][weather] + " ·", W / 2, 88);
+    ctx.textAlign = "left";
   }
 
   if (state === S_PLAY && paused) {
@@ -1390,7 +1829,7 @@ function rr(x, y, w, h, r) {
 
 /* 子面板尺寸（版本更新 / 商店共用） */
 function panelRect() {
-  return { x: W / 2 - 280, y: 96, w: 560, h: 400 };
+  return { x: W / 2 - 280, y: 76, w: 560, h: 480 };
 }
 
 /* ---- 封面小物件：云 / 太阳 ---- */
@@ -1575,9 +2014,6 @@ function shopIcon(id, x, y) {
     ctx.beginPath(); ctx.arc(x, y, 17, 0, 7); ctx.fill();
     ctx.strokeStyle = "#8fd0ff"; ctx.lineWidth = 2.5;
     ctx.beginPath(); ctx.arc(x, y, 17, 0, 7); ctx.stroke();
-    ctx.fillStyle = "#e8f6ff";
-    ctx.font = "bold 15px sans-serif"; ctx.textAlign = "center";
-    ctx.fillText("盾", x, y + 5);
   } else if (id === "magnet") {   // 红 U 磁铁
     ctx.strokeStyle = "#ff6b6b"; ctx.lineWidth = 7; ctx.lineCap = "butt";
     ctx.beginPath(); ctx.arc(x, y - 2, 10, Math.PI, 0); ctx.stroke();
@@ -1590,6 +2026,13 @@ function shopIcon(id, x, y) {
     ctx.fillStyle = "#ffd34d";
     ctx.font = "bold 20px 'Microsoft YaHei', sans-serif"; ctx.textAlign = "center";
     ctx.fillText("×2", x, y + 7);
+  } else if (id === "bolt") {     // 金色闪电
+    ctx.fillStyle = "#ffcd28";
+    ctx.strokeStyle = "#c89614"; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x + 4, y - 14); ctx.lineTo(x - 8, y + 2); ctx.lineTo(x - 1, y + 2);
+    ctx.lineTo(x - 5, y + 14); ctx.lineTo(x + 9, y - 2); ctx.lineTo(x + 2, y - 2);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
   } else {                        // 粉色复活心
     ctx.fillStyle = "#ff8fa8";
     ctx.font = "26px sans-serif"; ctx.textAlign = "center";
@@ -1679,6 +2122,21 @@ function drawShopPanel() {
 function drawOver() {
   overlay("游戏结束", "本局分数 " + score() + "    最高分 " + best,
     score() >= best && score() > 0 ? "新纪录！" : "按空格或点击重新开始");
+  // 复活甲购买按钮（未预购复活甲且本局未复活过）
+  if (reviveAsk && !reviveUsed) {
+    const bw = 280, bh = 54;
+    const bx = W / 2 - bw / 2, by = H / 2 + 74;
+    const canAfford = bank >= 80;
+    ctx.save();
+    ctx.fillStyle = canAfford ? "rgba(255,190,60,.92)" : "rgba(140,130,110,.6)";
+    rr(bx, by, bw, bh, 12); ctx.fill();
+    ctx.strokeStyle = canAfford ? "#c98a1a" : "rgba(120,110,95,.8)"; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = canAfford ? "#4a2e08" : "#5a5248";
+    ctx.font = "bold 20px 'Microsoft YaHei', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("购买复活甲 80 币（钱包 " + bank + "）", W / 2, by + 34);
+    ctx.restore();
+  }
 }
 
 /* ================= 主循环 ================= */
